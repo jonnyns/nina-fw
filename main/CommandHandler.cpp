@@ -39,6 +39,7 @@
 #include "esp_log.h"
 #include "driver/adc_deprecated.h"
 #include <lwip/priv/sockets_priv.h>
+#include "lwip/netif.h" // JONOS
 
 #ifdef LWIP_PROVIDE_ERRNO
 int errno;
@@ -1854,6 +1855,10 @@ int brErrorCode(const uint8_t command[], uint8_t response[])
   return len + 5;
 }
 
+int _ifindexx = 0;
+int _retx = 0;
+int _errnox = 0;
+
 int getIPv6Info(const uint8_t command[], uint8_t response[]) // JONOS
 {
   //#define GET_IPV6_INFO_CMD 0x6A
@@ -1879,9 +1884,9 @@ int getIPv6Info(const uint8_t command[], uint8_t response[]) // JONOS
     const void *values[] = {
         &status,
         ip6.addr,
-        &heap_free,
-        &heap_min,
-        &heap_largest
+        &_ifindexx,  //&heap_free,
+        &_retx,   //&heap_min,
+        &_errnox  //&heap_largest
     };
 
     response[2] = 5;
@@ -1900,9 +1905,60 @@ int getIPv6Info(const uint8_t command[], uint8_t response[]) // JONOS
     return pos + 1;  // END_CMD appended by caller
 }
 
+
+
 //
 // Low-level BSD-like sockets functions
 //
+
+int socket_join_group6(const uint8_t command[],
+                       uint8_t response[])
+{
+    uint8_t sock = command[4];
+
+    int ret = -1;
+
+    if (command[2] == 2 &&
+        command[3] == 1 &&
+        command[5] == 16) {
+
+        struct ipv6_mreq mreq = {};
+
+        memcpy(&mreq.ipv6mr_multiaddr,
+               &command[6], 16);
+
+        // Interface 0: let lwIP select the interface.
+//        mreq.ipv6mr_interface = 0;
+        mreq.ipv6mr_interface = netif_get_index(netif_default);
+        
+        uint32_t ifindex = netif_default ? netif_get_index(netif_default) : 0;
+
+        errno = 0;
+
+        ret = lwip_setsockopt(
+            sock,
+            IPPROTO_IPV6,
+            IPV6_JOIN_GROUP,
+            &mreq,
+            sizeof(mreq));
+            
+        _retx = ret;
+        _errnox = errno;
+        _ifindexx = ifindex;
+
+        if (ret < 0) {
+            printf("IPv6 JOIN_GROUP failed: errno=%d\n",
+                   errno);
+        }
+    }
+
+    response[2] = 1;
+    response[3] = 1;
+    response[4] = (ret == 0) ? 1 : 0;
+
+    return 6;
+}
+
 int socket_socket(const uint8_t command[], uint8_t response[])
 {
 #if 0
@@ -3330,7 +3386,7 @@ const CommandHandlerType commandHandlers[] = {
   getFwVersionU32, setTime,
 
   // 0x60 -> 0x6f
-  writeFile, readFile, deleteFile, existsFile, downloadFile,  applyOTA, renameFile, downloadOTA, brSetECTrustAnchor, brErrorCode, getIPv6Info, NULL, NULL, NULL, NULL, NULL,
+  writeFile, readFile, deleteFile, existsFile, downloadFile,  applyOTA, renameFile, downloadOTA, brSetECTrustAnchor, brErrorCode, getIPv6Info, socket_join_group6, NULL, NULL, NULL, NULL,
 
   // Low-level BSD-like sockets functions.
   // 0x70 -> 0x7f

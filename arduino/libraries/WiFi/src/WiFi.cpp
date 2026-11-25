@@ -34,6 +34,9 @@
 
 #include "WiFi.h"
 
+ip6_addr_t _ip6 = {0};  // JONOS
+esp_err_t _get_ip6_rc;    // JONOS
+
 WiFiClass::WiFiClass() :
   _initialized(false),
   _status(WL_NO_SHIELD),
@@ -738,9 +741,25 @@ void WiFiClass::handleSystemEvent(system_event_t* event)
     case SYSTEM_EVENT_STA_STOP:
       xEventGroupClearBits(_eventGroup, BIT0);
       break;
+      
+    case SYSTEM_EVENT_GOT_IP6:  // JONOS
+    {
+      if ((_get_ip6_rc = tcpip_adapter_get_ip6_linklocal(
+        TCPIP_ADAPTER_IF_STA, &_ip6)) == ESP_OK) {
 
-    case SYSTEM_EVENT_STA_CONNECTED:
+        printf("IPv6 address: %s\n", ip6addr_ntoa(&_ip6));
+      }
+    break;
+    }
+
+    case SYSTEM_EVENT_STA_CONNECTED: {
       _reasonCode = 0;
+      
+      esp_err_t err =
+      tcpip_adapter_create_ip6_linklocal(TCPIP_ADAPTER_IF_STA); //  JONOS
+
+      printf("IPv6 link-local creation: %s\n",
+        esp_err_to_name(err));
 
       esp_wifi_sta_get_ap_info(&_apRecord);
 
@@ -752,6 +771,7 @@ void WiFiClass::handleSystemEvent(system_event_t* event)
         _status = WL_CONNECTED;
       }
       break;
+    }
 
     case SYSTEM_EVENT_STA_GOT_IP:
       memcpy(&_ipInfo, &event->event_info.got_ip.ip_info, sizeof(_ipInfo));
@@ -759,6 +779,7 @@ void WiFiClass::handleSystemEvent(system_event_t* event)
       break;
 
     case SYSTEM_EVENT_STA_DISCONNECTED: {
+      memset(&_ip6, 0, sizeof(_ip6)); // JONOS
       uint8_t reason = event->event_info.disconnected.reason;
 
       _reasonCode = reason;

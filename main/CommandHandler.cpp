@@ -35,6 +35,7 @@
 #include "CryptoUtil.h"
 #include "ECCX08Cert.h"
 
+#include <esp_heap_caps.h>  // JONOS
 #include "esp_log.h"
 #include "driver/adc_deprecated.h"
 #include <lwip/priv/sockets_priv.h>
@@ -59,6 +60,24 @@ WiFiServer tcpServers[MAX_SOCKETS];
 WiFiClient bearssl_tcp_client;
 BearSSLClient bearsslClient(bearssl_tcp_client, ArduinoIoTCloudTrustAnchor, ArduinoIoTCloudTrustAnchor_NUM);
 br_x509_trust_anchor customTrustAnchor;
+
+void get_heap_info(size_t* heap_free, size_t* heap_min_free, size_t* heap_largest_free) // JONOS
+{
+//    printf("Free heap:    %u\n",
+//        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+//
+//    printf("Minimum free: %u\n",
+//        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+//
+//    printf("Largest block:%u\n",
+//        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+  *heap_free = (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT);
+  
+  *heap_min_free = (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+  
+  *heap_largest_free = (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+}
 
 //#define STR2(x) #x
 //#define STR(x) STR2(x)
@@ -1835,11 +1854,58 @@ int brErrorCode(const uint8_t command[], uint8_t response[])
   return len + 5;
 }
 
+int getIPv6Info(const uint8_t command[], uint8_t response[]) // JONOS
+{
+  //#define GET_IPV6_INFO_CMD 0x6A
+  ip6_addr_t ip6 = {0};
+
+    // Read the current IPv6 address directly
+    esp_err_t err = tcpip_adapter_get_ip6_linklocal(
+        TCPIP_ADAPTER_IF_STA, &ip6);
+
+    uint8_t status = (err == ESP_OK) ? 1 : 0;
+
+    uint32_t heap_free =
+        heap_caps_get_free_size(MALLOC_CAP_8BIT);
+
+    uint32_t heap_min =
+        heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+
+    uint32_t heap_largest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+
+    const uint8_t sizes[] = {1, 16, 4, 4, 4};
+
+    const void *values[] = {
+        &status,
+        ip6.addr,
+        &heap_free,
+        &heap_min,
+        &heap_largest
+    };
+
+    response[2] = 5;
+
+    int pos = 3;
+
+    for (int i = 0; i < 5; i++) {
+//        // 16-bit parameter length, big-endian
+//        response[pos++] = 0;
+        response[pos++] = sizes[i];
+
+        memcpy(&response[pos], values[i], sizes[i]);
+        pos += sizes[i];
+    }
+
+    return pos + 1;  // END_CMD appended by caller
+}
+
 //
 // Low-level BSD-like sockets functions
 //
 int socket_socket(const uint8_t command[], uint8_t response[])
 {
+#if 0
   //[0]     CMD_START   < 0xE0   >
   //[1]     Command     < 1 byte >
   //[2]     N args      < 1 byte >
@@ -1858,6 +1924,35 @@ int socket_socket(const uint8_t command[], uint8_t response[])
   response[3] = 1; // parameter 1 length
   response[4] = (ret == -1) ? 255 : ret;
   return 6;
+#else
+    uint8_t type   = command[4];
+    uint8_t proto  = command[6];
+
+    // Existing commands default to IPv4.
+    uint8_t domain = AF_INET;
+
+    if (command[2] == 3) {
+        // Optional third parameter: address family
+        if (command[7] != 1) {
+            response[2] = 1;
+            response[3] = 1;
+            response[4] = 255;
+            return 6;
+        }
+
+        domain = command[8];
+    }
+
+    errno = 0;
+
+    int ret = lwip_socket(domain, type, proto);
+
+    response[2] = 1;
+    response[3] = 1;
+    response[4] = (ret == -1) ? 255 : (uint8_t)ret;
+
+    return 6;
+#endif
 }
 
 int socket_close(const uint8_t command[], uint8_t response[])
@@ -1891,6 +1986,7 @@ int socket_errno(const uint8_t command[], uint8_t response[])
 
 int socket_bind(const uint8_t command[], uint8_t response[])
 {
+#if 0  
   //[0]     CMD_START   < 0xE0    >
   //[1]     Command     < 1 byte  >
   //[2]     N args      < 1 byte  >
@@ -1915,6 +2011,61 @@ int socket_bind(const uint8_t command[], uint8_t response[])
   response[3] = 1; // parameter 1 length
   response[4] = (ret == -1) ? 0 : 1;
   return 6;
+#else
+  uint8_t sock = command[4];
+
+  int ret = -1;
+  int bind_errno = 0;
+  errno = 0;
+
+    if (command[2] == 3 &&
+        command[3] == 1 &&
+        command[5] == 16 &&
+        command[22] == 2) {
+
+        // IPv6: socket, 16-byte address, port
+
+        struct sockaddr_in6 addr = {};
+
+        addr.sin6_len = sizeof(addr);
+        addr.sin6_family = AF_INET6;
+        addr.sin6_scope_id = 0;
+
+        memcpy(&addr.sin6_addr, &command[6], 16);
+        memcpy(&addr.sin6_port, &command[23], 2);
+
+        ret = lwip_bind(sock,
+            (struct sockaddr*)&addr, sizeof(addr));
+    }
+    else if (command[2] == 2 &&
+             command[3] == 1 &&
+             command[5] == 2) {
+
+        // Original IPv4: socket, port
+
+        struct sockaddr_in addr = {};
+
+        addr.sin_len = sizeof(addr);
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = 0;
+
+        memcpy(&addr.sin_port, &command[6], 2);
+
+        ret = lwip_bind(sock,
+            (struct sockaddr*)&addr, sizeof(addr));
+    }
+    else {
+        errno = EINVAL;
+    }
+
+    bind_errno = (ret < 0) ? errno : 0;
+
+    response[2] = 1;
+    response[3] = 1;
+    response[4] = (ret == 0) ? 1 : 0;
+
+    return 6;
+#endif  
 }
 
 int socket_listen(const uint8_t command[], uint8_t response[])
@@ -2048,6 +2199,7 @@ int socket_recv(const uint8_t command[], uint8_t response[])
 
 int socket_sendto(const uint8_t command[], uint8_t response[])
 {
+#if 0
   //[0]      CMD_START  < 0xE0    >
   //[1]      Command    < 1 byte  >
   //[2]      N args     < 1 byte  >
@@ -2080,10 +2232,97 @@ int socket_sendto(const uint8_t command[], uint8_t response[])
   response[4] = (ret >> 8) & 0xff; // parameter 1 length
   response[5] = (ret >> 0) & 0xff;
   return 7;
+#else  
+  uint8_t sock = command[5];
+
+  // This SPI command uses 16-bit parameter lengths.
+  uint16_t ipLen =
+        ((uint16_t)command[6] << 8) | command[7];
+
+  int ret = -1;
+  errno = 0;
+
+  if (ipLen == 16 || ipLen == 4) {
+
+        // Calculate offsets from address length.
+        const int portLenPos = 8 + ipLen;
+        const int portPos = portLenPos + 2;
+        const int dataLenPos = portPos + 2;
+        const int dataPos = dataLenPos + 2;
+
+        uint16_t portLen =
+            ((uint16_t)command[portLenPos] << 8) |
+            command[portLenPos + 1];
+
+        uint16_t size =
+            ((uint16_t)command[dataLenPos] << 8) |
+            command[dataLenPos + 1];
+
+        if (portLen == 2 &&
+            size <= SPI_MAX_DMA_LEN - dataPos - 1) {
+
+            if (ipLen == 16) {
+                // IPv6
+                struct sockaddr_in6 addr = {};
+
+                addr.sin6_len = sizeof(addr);
+                addr.sin6_family = AF_INET6;
+
+                memcpy(&addr.sin6_addr,
+                       &command[8], 16);
+
+                memcpy(&addr.sin6_port,
+                       &command[portPos], 2);
+
+                addr.sin6_scope_id = 0;
+
+                ret = lwip_sendto(
+                    sock, &command[dataPos], size, 0,
+                    (struct sockaddr*)&addr,
+                    sizeof(addr));
+            }
+            else {
+                // Original IPv4 functionality
+                struct sockaddr_in addr = {};
+
+                addr.sin_len = sizeof(addr);
+                addr.sin_family = AF_INET;
+
+                memcpy(&addr.sin_addr.s_addr,
+                       &command[8], 4);
+
+                memcpy(&addr.sin_port,
+                       &command[portPos], 2);
+
+                ret = lwip_sendto(
+                    sock, &command[dataPos], size, 0,
+                    (struct sockaddr*)&addr,
+                    sizeof(addr));
+            }
+        }
+        else {
+            errno = EINVAL;
+        }
+  }
+  else {
+        errno = EAFNOSUPPORT;
+  }
+
+  // Preserve the original two-byte result format.
+  uint16_t sent = (ret < 0) ? 0 : ret;
+
+  response[2] = 1;
+  response[3] = 2;
+  response[4] = (sent >> 8) & 0xff;
+  response[5] = sent & 0xff;
+
+  return 7;
+#endif  
 }
 
 int socket_recvfrom(const uint8_t command[], uint8_t response[])
 {
+#if 0  
   //[0]     CMD_START   < 0xE0   >
   //[1]     Command     < 1 byte >
   //[2]     N args      < 1 byte >
@@ -2118,6 +2357,109 @@ int socket_recvfrom(const uint8_t command[], uint8_t response[])
   response[13] = (ret >> 8) & 0xff; // parameter 4 length
   response[14] = (ret >> 0) & 0xff;
   return 16 + ret;
+#else
+  uint8_t sock = command[4];
+  uint16_t size;
+
+  memcpy(&size, &command[6], sizeof(size));
+
+  bool ipv6 = false;
+
+  if (command[2] == 3 &&
+    command[3] == 1 &&
+    command[5] == 2 &&
+    command[8] == 1 &&
+    command[9] == AF_INET6) {
+    ipv6 = true;
+  }
+  else if (!(command[2] == 2 &&
+    command[3] == 1 &&
+    command[5] == 2)) {
+    return 0;  // Invalid SPI request
+  }
+
+  // SPI response header + parameter lengths + END_CMD:
+  // IPv4 = 16 bytes, IPv6 = 28 bytes.
+  const size_t overhead = ipv6 ? 28 : 16;
+
+  // Reserve 3 additional bytes for 4-byte DMA alignment.
+  if (SPI_MAX_DMA_LEN <= overhead + 3)
+    return 0;
+
+  size_t maxData = SPI_MAX_DMA_LEN - overhead - 3;
+
+  if (size > maxData)
+    size = maxData;
+
+  struct sockaddr_storage addr = {};
+  socklen_t addr_len = sizeof(addr);
+
+  // Three response parameters, each with 16-bit length.
+  response[2] = 3;
+
+  const uint8_t ipLen = ipv6 ? 16 : 4;
+
+  // Parameter 1: remote IP address
+  response[3] = 0;
+  response[4] = ipLen;
+
+  // Parameter 2: remote port
+  const int portLenPos = 5 + ipLen;
+  response[portLenPos] = 0;
+  response[portLenPos + 1] = 2;
+
+  // Parameter 3: received data
+  const int dataLenPos = portLenPos + 4;
+  const int dataPos = dataLenPos + 2;
+
+  errno = 0;
+
+  int ret = lwip_recvfrom(
+    sock,
+    &response[dataPos],
+    size,
+    MSG_DONTWAIT,
+    (struct sockaddr*)&addr,
+    &addr_len
+  );
+
+  // No packet or socket error: return zero-length data.
+  // Address and port remain zero.
+  memset(&response[5], 0, ipLen);
+  memset(&response[portLenPos + 2], 0, 2);
+
+  if (ret > 0 && addr.ss_family == (ipv6 ? AF_INET6 : AF_INET)) {
+
+    if (ipv6) {
+      const struct sockaddr_in6* a =
+        (const struct sockaddr_in6*)&addr;
+
+      memcpy(&response[5], &a->sin6_addr, 16);
+      memcpy(&response[portLenPos + 2],
+             &a->sin6_port, 2);
+    }
+    else {
+      const struct sockaddr_in* a =
+             (const struct sockaddr_in*)&addr;
+
+      memcpy(&response[5], &a->sin_addr.s_addr, 4);
+
+      // Preserve existing IPv4 SPI port encoding.
+      response[portLenPos + 2] =
+                (a->sin_port >> 8) & 0xff;
+      response[portLenPos + 3] =
+                a->sin_port & 0xff;
+    }
+  }
+
+  if (ret < 0)
+        ret = 0;
+
+  response[dataLenPos] = (ret >> 8) & 0xff;
+  response[dataLenPos + 1] = ret & 0xff;
+
+  return dataPos + ret + 1;
+#endif  
 }
 
 int socket_ioctl(const uint8_t command[], uint8_t response[])
@@ -2988,7 +3330,7 @@ const CommandHandlerType commandHandlers[] = {
   getFwVersionU32, setTime,
 
   // 0x60 -> 0x6f
-  writeFile, readFile, deleteFile, existsFile, downloadFile,  applyOTA, renameFile, downloadOTA, brSetECTrustAnchor, brErrorCode, NULL, NULL, NULL, NULL, NULL, NULL,
+  writeFile, readFile, deleteFile, existsFile, downloadFile,  applyOTA, renameFile, downloadOTA, brSetECTrustAnchor, brErrorCode, getIPv6Info, NULL, NULL, NULL, NULL, NULL,
 
   // Low-level BSD-like sockets functions.
   // 0x70 -> 0x7f

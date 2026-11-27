@@ -1919,6 +1919,26 @@ int getIPv6Info(const uint8_t command[], uint8_t response[]) // JONOS
 // Low-level BSD-like sockets functions
 //
 
+void inspect_netif(uint8_t index)
+{
+    struct netif* nif = netif_get_by_index(index);
+
+    if (nif == NULL) {
+        _my_param_0 = 0;
+        _my_param_1 = 0;
+        _my_param_2 = 0;
+        return;
+    }
+
+    // Encode the two-character interface name.
+    _my_param_0 =
+        ((uint32_t)(uint8_t)nif->name[0] << 8) |
+        (uint8_t)nif->name[1];
+
+    _my_param_1 = nif->num;
+    _my_param_2 = nif->flags;
+}
+
 static constexpr size_t ENDPOINT6_SIZE = 22;
 
 static void encodeEndpoint6(
@@ -2062,11 +2082,13 @@ int socket_socket(const uint8_t command[], uint8_t response[])
 
       int saved_errno = (rc < 0) ? errno : 0;
       
-      _my_param_0 = ret;
-      _my_param_1 = rc;
-      _my_param_2 = saved_errno;
+//      _my_param_0 = ret;
+//      _my_param_1 = rc;
+//      _my_param_2 = saved_errno;
     }
 //---
+    //inspect_netif(3); // JONOS
+//---    
 
     response[2] = 1;
     response[3] = 1;
@@ -2139,26 +2161,19 @@ int socket_bind(const uint8_t command[], uint8_t response[])
   int bind_errno = 0;
   errno = 0;
 
-    if (command[2] == 3 &&
-        command[3] == 1 &&
-        command[5] == 16 &&
-        command[22] == 2) {
+  if (command[2] == 2 &&
+    command[3] == 1 &&
+    command[5] == 22) {
 
-        // IPv6: socket, 16-byte address, port
+    struct sockaddr_in6 addr;
+    decodeEndpoint6(&addr, &command[6]);
 
-        struct sockaddr_in6 addr = {};
-
-        addr.sin6_len = sizeof(addr);
-        addr.sin6_family = AF_INET6;
-        addr.sin6_scope_id = 0;
-
-        memcpy(&addr.sin6_addr, &command[6], 16);
-        memcpy(&addr.sin6_port, &command[23], 2);
-
-        ret = lwip_bind(sock,
-            (struct sockaddr*)&addr, sizeof(addr));
-    }
-    else if (command[2] == 2 &&
+    ret = lwip_bind(
+        sock,
+        (struct sockaddr*)&addr,
+        sizeof(addr));
+  }
+  else if (command[2] == 2 &&
              command[3] == 1 &&
              command[5] == 2) {
 
@@ -2174,18 +2189,18 @@ int socket_bind(const uint8_t command[], uint8_t response[])
 
         ret = lwip_bind(sock,
             (struct sockaddr*)&addr, sizeof(addr));
-    }
-    else {
+  }
+  else {
         errno = EINVAL;
-    }
+  }
 
-    bind_errno = (ret < 0) ? errno : 0;
+  bind_errno = (ret < 0) ? errno : 0;
 
-    response[2] = 1;
-    response[3] = 1;
-    response[4] = (ret == 0) ? 1 : 0;
+  response[2] = 1;
+  response[3] = 1;
+  response[4] = (ret == 0) ? 1 : 0;
 
-    return 6;
+  return 6;
 #endif  
 }
 
@@ -2777,8 +2792,8 @@ int socket_recvfrom(const uint8_t command[], uint8_t response[])
         // 0 = no IPv6 packet info
         // 1 = multicast destination ff02::fd
         // 2 = another IPv6 destination
-        _my_param_0 = 0;
-        _my_param_1 = 0;
+        //_my_param_0 = 0;
+        //_my_param_1 = 0;
 
         for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
              cmsg != NULL;
@@ -2804,7 +2819,7 @@ int socket_recvfrom(const uint8_t command[], uint8_t response[])
                 //_my_param_0 = memcmp(dst, coapGroup, 16) == 0 ? 1 : 2;
                 memcpy(dstIp6, &pktinfo->ipi6_addr, 16);
 
-                _my_param_1 = pktinfo->ipi6_ifindex;
+                //_my_param_1 = pktinfo->ipi6_ifindex;
                 break;
             }
         }
